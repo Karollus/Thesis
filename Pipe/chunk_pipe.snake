@@ -1,0 +1,76 @@
+###
+# usage:
+#
+# create config.yaml in your project folder
+# modify config to contain the paths to you projectfolder
+# run as snake script e.g. snakemake -s pipe.snake --cores 40 --use-conda
+
+import re
+import os
+import pprint
+import sys
+import yaml
+import subprocess
+
+import pandas as pd
+import numpy as np
+
+# set project folder
+projfolder = config["projectfolder"]
+scriptspath = config["scripts_path"]
+data_path = config['data_path']
+# determine specification
+script = config["script"]
+specification = config["name"]
+number_of_jobs = config["num_of_jobs"]
+conda_env = config["conda"]
+config_path = config['config_path']
+file_suffix = config['file_suffix']
+
+####
+def chunking_pairs(number_of_rows, number_of_jobs):
+    """Gets (start, stop) tuples (end-inclusive) for dataframes based on number of jobs"""
+    start = 0
+    end = 0
+    chunksize = max(number_of_rows // number_of_jobs, 1)
+    l = []
+    total = number_of_rows - 1
+    if total == 0: # special handling of length 1 dataset
+        end = start
+        l.append((start, end))
+        return l
+    while end < total:
+        end = start + (chunksize - 1)
+        if end > total:
+            end = total
+        l.append((start, end))
+        start = end + 1
+    return l
+
+# this function chunks the data
+def get_chunks_for_samplegen(data_path=data_path, number_of_jobs = number_of_jobs):
+    #dataset = pd.read_table(data_path)
+    result = subprocess.run(['wc', '-l', data_path], capture_output=True, text=True)
+    actual_len = int(result.stdout.split()[0]) - 1 #remove header
+    # compute indices
+    l = chunking_pairs(actual_len, number_of_jobs)
+    indices = [f"{t[0]}_{t[1]}" for t in l]
+    return indices
+
+####
+# rules
+
+rule all:
+    input:
+        final = expand(os.path.join(projfolder, specification, f"outs_{{indx}}.{file_suffix}"), indx = get_chunks_for_samplegen()),
+        
+rule run:
+    resources: ntasks = 1, cpu = 4, mem_mb = 24_000, gpu = 1
+    output:
+        os.path.join(projfolder, specification, f"outs_{{indx}}.{file_suffix}")
+    log:
+        os.path.join(projfolder, specification, "logs", "run_{indx}_log.txt") 
+    conda:
+        "{}".format(conda_env)
+    shell:
+        "python3 -u {scriptspath}/{script} -in_path {data_path} -out_path {output} -config_path {config_path} > {log}"   
